@@ -1,0 +1,22 @@
+[Unit]
+Description=PiDog Remote Control API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pidog-alpha
+Environment=PIDOG_API_MODE=real
+Environment=PIDOG_API_HOST=0.0.0.0
+Environment=PIDOG_API_PORT=8000
+# Optional:
+# Environment=PIDOG_API_TOKEN=replace-me
+# Environment=PIDOG_SOUND_DIR=/home/pi/pidog/sounds
+ExecStart=/home/pi/pidog-alpha/.venv/bin/python /home/pi/pidog-alpha/main.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+
