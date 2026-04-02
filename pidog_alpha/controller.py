@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep
 from typing import Any, Callable, Dict, Optional
+import os
+import sys
 import threading
 import uuid
 
-from .catalog import BASE_ACTIONS, COMPOSITE_ACTIONS, resolve_sound_dir
+from .catalog import BASE_ACTIONS, COMPOSITE_ACTIONS, PROJECT_ROOT, resolve_sound_dir
 
 
 def utc_now() -> str:
@@ -20,12 +22,75 @@ class ControllerError(RuntimeError):
     """Raised when the robot backend cannot satisfy a request."""
 
 
+def _python_version_dirs() -> tuple[str, str]:
+    return f"python{sys.version_info.major}.{sys.version_info.minor}", f"python{sys.version_info.major}"
+
+
+def _iter_backend_search_paths() -> list[Path]:
+    py_major_minor, py_major = _python_version_dirs()
+    candidates: list[Path] = []
+
+    extra_paths = os.getenv("PIDOG_PYTHONPATH", "").strip()
+    if extra_paths:
+        for raw_path in extra_paths.split(os.pathsep):
+            if raw_path.strip():
+                candidates.append(Path(raw_path).expanduser())
+
+    candidates.extend(
+        [
+            PROJECT_ROOT / "vendor" / "pidog-upstream",
+            Path.home() / "pidog",
+            Path("/usr/local/lib") / py_major_minor / "dist-packages",
+            Path("/usr/local/lib") / py_major_minor / "site-packages",
+            Path("/usr/lib") / py_major_minor / "dist-packages",
+            Path("/usr/lib") / py_major_minor / "site-packages",
+            Path("/usr/lib") / py_major / "dist-packages",
+            Path("/usr/lib") / py_major / "site-packages",
+        ]
+    )
+
+    unique_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser()
+        key = str(resolved)
+        if key in seen or not resolved.exists():
+            continue
+        seen.add(key)
+        unique_candidates.append(resolved)
+    return unique_candidates
+
+
+def _prepare_backend_imports() -> list[str]:
+    added_paths: list[str] = []
+    for candidate in _iter_backend_search_paths():
+        candidate_str = str(candidate)
+        if candidate_str in sys.path:
+            continue
+        sys.path.insert(0, candidate_str)
+        added_paths.append(candidate_str)
+    return added_paths
+
+
+def _detect_backend_source(module: Any) -> Optional[str]:
+    module_path = getattr(module, "__file__", None)
+    if not module_path:
+        return None
+    return str(Path(module_path).resolve().parent.parent)
+
+
 class BaseRobotController:
     mode = "base"
 
-    def __init__(self, sound_dir: Optional[Path], init_error: Optional[str] = None):
+    def __init__(
+        self,
+        sound_dir: Optional[Path],
+        init_error: Optional[str] = None,
+        backend_source: Optional[str] = None,
+    ):
         self.sound_dir = sound_dir
         self.init_error = init_error
+        self.backend_source = backend_source
 
     def run_action(self, name: str, speed: int = 80, step_count: int = 1) -> Dict[str, Any]:
         raise NotImplementedError
@@ -101,6 +166,7 @@ class MockRobotController(BaseRobotController):
         return {
             "mode": self.mode,
             "sound_directory": str(self.sound_dir) if self.sound_dir else None,
+            "backend_source": self.backend_source,
             "last_action": self.last_action,
             "last_sound": self.last_sound,
             "last_led": self.last_led,
@@ -113,7 +179,7 @@ class RealRobotController(BaseRobotController):
     mode = "real"
 
     def __init__(self, sound_dir: Optional[Path]):
-        super().__init__(sound_dir=sound_dir)
+        added_paths = _prepare_backend_imports()
 
         from pidog import Pidog
         from pidog.preset_actions import (
@@ -126,6 +192,13 @@ class RealRobotController(BaseRobotController):
             pant,
             scratch,
         )
+        import pidog as pidog_module
+
+        backend_source = _detect_backend_source(pidog_module)
+        if backend_source is None and added_paths:
+            backend_source = added_paths[0]
+
+        super().__init__(sound_dir=sound_dir, backend_source=backend_source)
 
         self._dog = Pidog()
         self._last_action: Optional[Dict[str, Any]] = None
@@ -232,6 +305,7 @@ class RealRobotController(BaseRobotController):
         return {
             "mode": self.mode,
             "sound_directory": str(self.sound_dir) if self.sound_dir else None,
+            "backend_source": self.backend_source,
             "battery_voltage": battery_voltage,
             "distance_cm": distance_cm,
             "last_action": self._last_action,
@@ -380,4 +454,3 @@ class PidogCommandService:
         self.cancel_pending_jobs()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self.controller.close()
-

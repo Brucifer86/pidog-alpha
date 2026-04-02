@@ -62,6 +62,7 @@ Optional environment variables:
 - `PIDOG_API_MODE=auto|real|mock`
 - `PIDOG_API_TOKEN=your-secret-token`
 - `PIDOG_SOUND_DIR=/home/pi/pidog/sounds`
+- `PIDOG_PYTHONPATH=/custom/python/path:/another/path`
 - `PIDOG_API_CORS_ORIGINS=http://your-ui.local,http://another-host`
 
 If you want to develop off-device, use:
@@ -152,5 +153,7 @@ sudo systemctl status pidog-web.service
 ## Notes
 
 - `auto` mode tries the real PiDog backend first and falls back to mock mode if the hardware stack cannot be initialized.
+- The service now looks for the PiDog stack in the vendored checkout at `vendor/pidog-upstream`, `~/pidog`, and common Raspberry Pi system package locations before falling back. Use `PIDOG_PYTHONPATH` if your install lives somewhere else.
 - The API only exposes named actions from a built-in catalog. It does not run arbitrary Python.
 - Sound playback works best when the process has the same permissions expected by the upstream PiDog audio tooling. On many PiDog setups that means starting the service with sufficient privileges for audio access.
+- `GET /health` includes the controller `backend_source`, which is useful for confirming that the API booted against the real PiDog library instead of mock mode.
