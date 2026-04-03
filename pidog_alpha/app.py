@@ -7,11 +7,12 @@ from typing import Any, Dict, List, Optional
 import os
 import re
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
+from .camera import CameraError, build_camera_service
 from .controller import ControllerError, PidogCommandService, build_controller
 
 
@@ -141,12 +142,15 @@ def _refresh_catalog(app: FastAPI, sound_dir: Path) -> None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     controller = build_controller(mode=settings.mode, sound_dir=settings.sound_dir)
+    camera = build_camera_service(mode=settings.mode)
     service = PidogCommandService(controller)
 
     app.state.settings = settings
     app.state.service = service
+    app.state.camera = camera
     app.state.catalog = build_catalog(controller.sound_dir)
     yield
+    camera.close()
     service.close()
 
 
@@ -180,7 +184,9 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health(request: Request) -> Dict[str, Any]:
-        return request.app.state.service.health()
+        health_data = request.app.state.service.health()
+        health_data["camera"] = request.app.state.camera.status()
+        return health_data
 
     @app.get("/catalog")
     def catalog(request: Request) -> Dict[str, Any]:
@@ -194,6 +200,7 @@ def create_app() -> FastAPI:
                 "sounds": len(request.app.state.catalog["sounds"]),
             },
             "health": request.app.state.service.health(),
+            "camera": request.app.state.camera.status(),
         }
 
     @app.get("/jobs/{job_id}", dependencies=[Depends(require_api_token)])
@@ -284,6 +291,24 @@ def create_app() -> FastAPI:
             "catalog_size": len(request.app.state.catalog["sounds"]),
             "mode": request.app.state.service.controller.mode,
         }
+
+    @app.get(
+        "/camera/snapshot",
+        dependencies=[Depends(require_api_token)],
+        responses={200: {"content": {"image/jpeg": {}}}},
+    )
+    def camera_snapshot(request: Request) -> Response:
+        try:
+            payload = request.app.state.camera.snapshot()
+        except CameraError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        status_data = request.app.state.camera.status()
+        backend = status_data.get("last_backend")
+        headers = {"Cache-Control": "no-store"}
+        if backend:
+            headers["X-Camera-Backend"] = str(backend)
+        return Response(content=payload, media_type="image/jpeg", headers=headers)
 
     @app.post("/leds/set", dependencies=[Depends(require_api_token)])
     def set_led(payload: LedRequest, request: Request) -> Dict[str, Any]:

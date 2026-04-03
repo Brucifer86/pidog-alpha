@@ -63,6 +63,8 @@ Optional environment variables:
 - `PIDOG_API_TOKEN=your-secret-token`
 - `PIDOG_SOUND_DIR=/home/pi/pidog/sounds`
 - `PIDOG_PYTHONPATH=/custom/python/path:/another/path`
+- `PIDOG_CAMERA_COMMAND="rpicam-jpeg --nopreview --timeout 3000 -o -"`
+- `PIDOG_CAMERA_TIMEOUT_MS=3000`
 - `PIDOG_API_CORS_ORIGINS=http://your-ui.local,http://another-host`
 
 If you want to develop off-device, use:
@@ -76,6 +78,7 @@ PIDOG_API_MODE=mock python main.py
 - `GET /health`
 - `GET /catalog`
 - `GET /status`
+- `GET /camera/snapshot`
 - `GET /jobs/{job_id}`
 - `POST /actions/run`
 - `POST /sounds/play`
@@ -100,6 +103,14 @@ List available commands and sounds:
 
 ```bash
 curl http://pidog.local:8000/catalog
+```
+
+Grab a camera snapshot:
+
+```bash
+curl http://pidog.local:8000/camera/snapshot \
+  -H "Authorization: Bearer your-secret-token" \
+  --output snapshot.jpg
 ```
 
 Run a movement:
@@ -166,5 +177,6 @@ sudo systemctl status pidog-web.service
 - The service now looks for the PiDog stack in the vendored checkout at `vendor/pidog-upstream`, `~/pidog`, and common Raspberry Pi system package locations before falling back. Use `PIDOG_PYTHONPATH` if your install lives somewhere else.
 - The API only exposes named actions from a built-in catalog. It does not run arbitrary Python.
 - Uploaded sounds are stored in `PIDOG_SOUND_DIR` when set. Otherwise the service uses the first available sound directory from `~/pidog/sounds` or the vendored `vendor/pidog-upstream/sounds` directory.
+- Camera snapshots use standard Raspberry Pi still-image tools. The service tries `rpicam-jpeg`, then `libcamera-jpeg`, then `libcamera-still`, and returns a JPEG from `/camera/snapshot`.
 - Sound playback works best when the process has the same permissions expected by the upstream PiDog audio tooling. On many PiDog setups that means starting the service with sufficient privileges for audio access.
 - `GET /health` includes the controller `backend_source`, which is useful for confirming that the API booted against the real PiDog library instead of mock mode.
