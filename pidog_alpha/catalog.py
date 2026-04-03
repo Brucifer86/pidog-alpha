@@ -80,7 +80,7 @@ DEFAULT_SOUNDS: List[str] = [
 ]
 
 
-def resolve_sound_dir(explicit: Optional[str] = None) -> Optional[Path]:
+def _sound_dir_candidates(explicit: Optional[str] = None) -> List[Path]:
     candidates: List[Path] = []
 
     env_value = explicit or os.getenv("PIDOG_SOUND_DIR")
@@ -93,11 +93,24 @@ def resolve_sound_dir(explicit: Optional[str] = None) -> Optional[Path]:
             PROJECT_ROOT / "vendor" / "pidog-upstream" / "sounds",
         ]
     )
+    return candidates
 
-    for candidate in candidates:
+
+def resolve_sound_dir(explicit: Optional[str] = None) -> Optional[Path]:
+    for candidate in _sound_dir_candidates(explicit):
         if candidate.is_dir():
             return candidate.resolve()
     return None
+
+
+def ensure_sound_dir(explicit: Optional[str] = None) -> Path:
+    for candidate in _sound_dir_candidates(explicit):
+        if candidate.is_dir():
+            return candidate.resolve()
+
+    target = _sound_dir_candidates(explicit)[0]
+    target.mkdir(parents=True, exist_ok=True)
+    return target.resolve()
 
 
 def list_sounds(sound_dir: Optional[Path]) -> List[str]:

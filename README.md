@@ -79,6 +79,7 @@ PIDOG_API_MODE=mock python main.py
 - `GET /jobs/{job_id}`
 - `POST /actions/run`
 - `POST /sounds/play`
+- `POST /sounds/upload`
 - `POST /leds/set`
 - `POST /stop`
 
@@ -119,6 +120,15 @@ curl -X POST http://pidog.local:8000/sounds/play \
   -d '{"name":"single_bark_1","volume":100,"wait":false}'
 ```
 
+Upload a sound:
+
+```bash
+curl -X POST http://pidog.local:8000/sounds/upload \
+  -H "Authorization: Bearer your-secret-token" \
+  -F "file=@single_bark_3.mp3" \
+  -F "name=single_bark_3"
+```
+
 Set the LED strip:
 
 ```bash
@@ -155,5 +165,6 @@ sudo systemctl status pidog-web.service
 - `auto` mode tries the real PiDog backend first and falls back to mock mode if the hardware stack cannot be initialized.
 - The service now looks for the PiDog stack in the vendored checkout at `vendor/pidog-upstream`, `~/pidog`, and common Raspberry Pi system package locations before falling back. Use `PIDOG_PYTHONPATH` if your install lives somewhere else.
 - The API only exposes named actions from a built-in catalog. It does not run arbitrary Python.
+- Uploaded sounds are stored in `PIDOG_SOUND_DIR` when set. Otherwise the service uses the first available sound directory from `~/pidog/sounds` or the vendored `vendor/pidog-upstream/sounds` directory.
 - Sound playback works best when the process has the same permissions expected by the upstream PiDog audio tooling. On many PiDog setups that means starting the service with sufficient privileges for audio access.
 - `GET /health` includes the controller `backend_source`, which is useful for confirming that the API booted against the real PiDog library instead of mock mode.

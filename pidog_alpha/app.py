@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import os
+import re
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .catalog import LED_STYLES, build_catalog
+from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
 from .controller import ControllerError, PidogCommandService, build_controller
 
 
@@ -107,6 +109,32 @@ def _validate_sound(app: FastAPI, name: str) -> None:
 def _validate_led_style(style: str) -> None:
     if style not in LED_STYLES:
         raise HTTPException(status_code=404, detail="Unknown LED style.")
+
+
+def _sanitize_sound_name(raw_name: str) -> str:
+    normalized = re.sub(r"\s+", "_", raw_name.strip())
+    safe_name = re.sub(r"[^A-Za-z0-9_-]", "", normalized)
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Sound name must contain letters, numbers, '-' or '_'.")
+    return safe_name
+
+
+async def _save_upload_file(upload: UploadFile, destination: Path) -> int:
+    size = 0
+    with destination.open("wb") as output:
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+            size += len(chunk)
+    await upload.close()
+    return size
+
+
+def _refresh_catalog(app: FastAPI, sound_dir: Path) -> None:
+    app.state.service.controller.sound_dir = sound_dir
+    app.state.catalog = build_catalog(sound_dir)
 
 
 @asynccontextmanager
@@ -216,6 +244,46 @@ def create_app() -> FastAPI:
             )
         except ControllerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/sounds/upload", dependencies=[Depends(require_api_token)])
+    async def upload_sound(
+        request: Request,
+        file: UploadFile = File(description="MP3 file to add to the sound catalog."),
+        name: Optional[str] = Form(default=None, description="Optional catalog name. Defaults to the uploaded filename."),
+        overwrite: bool = Form(default=False, description="Replace an existing sound with the same name."),
+    ) -> Dict[str, Any]:
+        original_name = file.filename or ""
+        source_path = Path(original_name)
+        extension = source_path.suffix.lower()
+        if extension != ".mp3":
+            raise HTTPException(status_code=400, detail="Only .mp3 uploads are supported.")
+
+        sound_name = _sanitize_sound_name(name or source_path.stem)
+        sound_dir = ensure_sound_dir(request.app.state.settings.sound_dir)
+        destination = sound_dir / f"{sound_name}.mp3"
+
+        if destination.exists() and not overwrite:
+            raise HTTPException(status_code=409, detail="Sound already exists. Set overwrite=true to replace it.")
+
+        try:
+            size = await _save_upload_file(file, destination)
+        except Exception as exc:
+            if destination.exists():
+                destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Failed to store uploaded sound: {exc}") from exc
+
+        _refresh_catalog(request.app, sound_dir)
+        return {
+            "ok": True,
+            "sound": {
+                "name": sound_name,
+                "filename": destination.name,
+                "size_bytes": size,
+            },
+            "sound_directory": str(sound_dir),
+            "catalog_size": len(request.app.state.catalog["sounds"]),
+            "mode": request.app.state.service.controller.mode,
+        }
 
     @app.post("/leds/set", dependencies=[Depends(require_api_token)])
     def set_led(payload: LedRequest, request: Request) -> Dict[str, Any]:
