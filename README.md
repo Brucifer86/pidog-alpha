@@ -80,9 +80,11 @@ PIDOG_API_MODE=mock .venv/bin/python main.py
 - `GET /status`
 - `GET /camera/snapshot`
 - `GET /jobs/{job_id}`
+- `GET /sounds`
 - `POST /actions/run`
 - `POST /sounds/play`
 - `POST /sounds/upload`
+- `DELETE /sounds/{name}`
 - `POST /leds/set`
 - `POST /stop`
 
@@ -103,6 +105,13 @@ List available commands and sounds:
 
 ```bash
 curl http://pidog.local:8000/catalog
+```
+
+List playable sounds:
+
+```bash
+curl http://pidog.local:8000/sounds \
+  -H "Authorization: Bearer your-secret-token"
 ```
 
 Grab a camera snapshot:
@@ -138,6 +147,13 @@ curl -X POST http://pidog.local:8000/sounds/upload \
   -H "Authorization: Bearer your-secret-token" \
   -F "file=@single_bark_3.mp3" \
   -F "name=single_bark_3"
+```
+
+Delete a sound file:
+
+```bash
+curl -X DELETE http://pidog.local:8000/sounds/single_bark_3 \
+  -H "Authorization: Bearer your-secret-token"
 ```
 
 Set the LED strip:
@@ -179,6 +195,7 @@ sudo systemctl status pidog-web.service
 - The service now looks for the PiDog stack in the vendored checkout at `vendor/pidog-upstream`, `~/pidog`, and common Raspberry Pi system package locations before falling back. Use `PIDOG_PYTHONPATH` if your install lives somewhere else.
 - The API only exposes named actions from a built-in catalog. It does not run arbitrary Python.
 - Uploaded sounds are stored in `PIDOG_SOUND_DIR` when set. Otherwise the service uses the first available sound directory from `~/pidog/sounds` or the vendored `vendor/pidog-upstream/sounds` directory.
+- `DELETE /sounds/{name}` removes a matching `.mp3` or `.wav` file from the active sound directory. Built-in fallback sound names cannot be deleted unless they exist as files in that directory.
 - Camera snapshots use standard Raspberry Pi still-image tools. The service tries `rpicam-jpeg`, then `libcamera-jpeg`, then `libcamera-still`, and returns a JPEG from `/camera/snapshot`.
 - Sound playback works best when the process has the same permissions expected by the upstream PiDog audio tooling. On many PiDog setups that means starting the service with sufficient privileges for audio access.
 - `GET /health` includes the controller `backend_source`, which is useful for confirming that the API booted against the real PiDog library instead of mock mode.

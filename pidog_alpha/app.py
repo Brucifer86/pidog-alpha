@@ -146,9 +146,36 @@ async def _save_upload_file(upload: UploadFile, destination: Path) -> int:
     return size
 
 
-def _refresh_catalog(app: FastAPI, sound_dir: Path) -> None:
+def _refresh_catalog(app: FastAPI, sound_dir: Optional[Path]) -> None:
     app.state.service.controller.sound_dir = sound_dir
     app.state.catalog = build_catalog(sound_dir)
+
+
+def _sound_file_for_delete(sound_dir: Optional[Path], name: str) -> Optional[Path]:
+    sound_name = _sanitize_sound_name(name)
+    if sound_name != name:
+        raise HTTPException(status_code=400, detail="Sound name must contain letters, numbers, '-' or '_'.")
+    if sound_dir is None or not sound_dir.is_dir():
+        return None
+
+    resolved_dir = sound_dir.resolve()
+    for suffix in (".mp3", ".wav"):
+        candidate = (resolved_dir / f"{sound_name}{suffix}").resolve()
+        if candidate.parent == resolved_dir and candidate.is_file():
+            return candidate
+    return None
+
+
+def _sound_list_response(request: Request) -> Dict[str, Any]:
+    sound_dir = request.app.state.service.controller.sound_dir
+    _refresh_catalog(request.app, sound_dir)
+    sounds = request.app.state.catalog["sounds"]
+    return {
+        "sounds": sounds,
+        "sound_directory": request.app.state.catalog["sound_directory"],
+        "catalog_size": len(sounds),
+        "mode": request.app.state.service.controller.mode,
+    }
 
 
 def _set_led_with_runtime(service: PidogCommandService, payload: LedRequest) -> Dict[str, Any]:
@@ -294,6 +321,10 @@ def create_app() -> FastAPI:
         except ControllerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/sounds", dependencies=[Depends(require_api_token)])
+    def list_playable_sounds(request: Request) -> Dict[str, Any]:
+        return _sound_list_response(request)
+
     @app.post("/sounds/upload", dependencies=[Depends(require_api_token)])
     async def upload_sound(
         request: Request,
@@ -332,6 +363,32 @@ def create_app() -> FastAPI:
             "sound_directory": str(sound_dir),
             "catalog_size": len(request.app.state.catalog["sounds"]),
             "mode": request.app.state.service.controller.mode,
+        }
+
+    @app.delete("/sounds/{name}", dependencies=[Depends(require_api_token)])
+    def delete_sound(name: str, request: Request) -> Dict[str, Any]:
+        service = request.app.state.service
+        sound_file = _sound_file_for_delete(service.controller.sound_dir, name)
+        if sound_file is None:
+            raise HTTPException(status_code=404, detail="Sound file not found.")
+
+        try:
+            sound_file.unlink()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete sound: {exc}") from exc
+
+        _refresh_catalog(request.app, service.controller.sound_dir)
+        sounds = request.app.state.catalog["sounds"]
+        return {
+            "ok": True,
+            "deleted": {
+                "name": name,
+                "filename": sound_file.name,
+            },
+            "sound_directory": request.app.state.catalog["sound_directory"],
+            "catalog_size": len(sounds),
+            "sounds": sounds,
+            "mode": service.controller.mode,
         }
 
     @app.get(
