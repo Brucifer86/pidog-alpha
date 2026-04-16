@@ -48,13 +48,13 @@ pip install -U pip
 pip install .
 ```
 
-Run it:
+Run it with the venv's Python:
 
 ```bash
 PIDOG_API_MODE=real \
 PIDOG_API_HOST=0.0.0.0 \
 PIDOG_API_PORT=8000 \
-python main.py
+.venv/bin/python main.py
 ```
 
 Optional environment variables:
@@ -70,7 +70,7 @@ Optional environment variables:
 If you want to develop off-device, use:
 
 ```bash
-PIDOG_API_MODE=mock python main.py
+PIDOG_API_MODE=mock .venv/bin/python main.py
 ```
 
 ## Endpoints
@@ -146,8 +146,10 @@ Set the LED strip:
 curl -X POST http://pidog.local:8000/leds/set \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-secret-token" \
-  -d '{"style":"listen","color":"cyan","bps":1.2,"brightness":0.8,"wait":true}'
+  -d '{"style":"listen","color":"cyan","bps":1.2,"brightness":0.8,"runtime_seconds":5,"wait":false}'
 ```
+
+Omit `runtime_seconds` to leave the LED mode running until another LED command changes it. The request also accepts `time` as a shorter alias for `runtime_seconds`.
 
 Emergency stop and lie down:
 

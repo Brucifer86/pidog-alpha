@@ -3,13 +3,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from time import sleep
 from typing import Any, Dict, List, Optional
 import os
 import re
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
 from .camera import CameraError, build_camera_service
@@ -66,7 +67,19 @@ class LedRequest(BaseModel):
     color: Any = Field(default="cyan")
     bps: float = Field(default=1.0, gt=0.0, le=10.0)
     brightness: float = Field(default=1.0, gt=0.0, le=1.0)
+    runtime_seconds: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Optional LED runtime in seconds before the strip is turned off.",
+    )
     wait: bool = Field(default=True, description="Queued for ordering with other robot commands.")
+
+    @root_validator(pre=True)
+    def accept_time_alias(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "runtime_seconds" not in values and "time" in values:
+            values = dict(values)
+            values["runtime_seconds"] = values["time"]
+        return values
 
 
 class StopRequest(BaseModel):
@@ -136,6 +149,35 @@ async def _save_upload_file(upload: UploadFile, destination: Path) -> int:
 def _refresh_catalog(app: FastAPI, sound_dir: Path) -> None:
     app.state.service.controller.sound_dir = sound_dir
     app.state.catalog = build_catalog(sound_dir)
+
+
+def _set_led_with_runtime(service: PidogCommandService, payload: LedRequest) -> Dict[str, Any]:
+    result = service.controller.set_led(
+        style=payload.style,
+        color=payload.color,
+        bps=payload.bps,
+        brightness=payload.brightness,
+    )
+
+    if payload.runtime_seconds is None:
+        return result
+
+    sleep(payload.runtime_seconds)
+    off_result = service.controller.set_led(
+        style="off",
+        color="black",
+        bps=1.0,
+        brightness=0.0,
+    )
+
+    return {
+        "ok": bool(result.get("ok")) and bool(off_result.get("ok")),
+        "mode": off_result.get("mode", result.get("mode")),
+        "led": off_result.get("led"),
+        "initial_led": result.get("led"),
+        "runtime_seconds": payload.runtime_seconds,
+        "turned_off": True,
+    }
 
 
 @asynccontextmanager
@@ -321,12 +363,7 @@ def create_app() -> FastAPI:
             return service.submit(
                 kind="led",
                 payload=body,
-                operation=lambda: service.controller.set_led(
-                    style=payload.style,
-                    color=payload.color,
-                    bps=payload.bps,
-                    brightness=payload.brightness,
-                ),
+                operation=lambda: _set_led_with_runtime(service, payload),
                 wait=payload.wait,
             )
         except ControllerError as exc:
