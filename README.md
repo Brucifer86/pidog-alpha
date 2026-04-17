@@ -67,6 +67,11 @@ Optional environment variables:
 - `PIDOG_AUTH_SECRET=long-random-signing-secret`
 - `PIDOG_AUTH_TOKEN_TTL_SECONDS=43200`
 - `PIDOG_AUTH_DISABLED=false`
+- `PIDOG_IDLE_ENABLED=true|false`
+- `PIDOG_IDLE_ACTIONS=wag_tail,head_up_down,shake_head,tilting_head_left,tilting_head_right`
+- `PIDOG_IDLE_MIN_INTERVAL_SECONDS=8`
+- `PIDOG_IDLE_MAX_INTERVAL_SECONDS=18`
+- `PIDOG_IDLE_SPEED=60`
 - `PIDOG_SOUND_DIR=/home/pi/pidog/sounds`
 - `PIDOG_PYTHONPATH=/custom/python/path:/another/path`
 - `PIDOG_CAMERA_COMMAND="rpicam-jpeg --nopreview --timeout 3000 -o -"`
@@ -122,6 +127,30 @@ curl http://pidog.local:8000/status \
 `PIDOG_API_TOKEN` is still supported for automation. Send it as either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 
 Swagger UI at `/docs` includes Authorize options for both `BearerAuth` and `ApiKeyAuth`.
+
+## Idle animations
+
+When the real PiDog backend is active, the service runs quiet idle animations while no user command is queued or running. Idle animations use the same single command worker as API commands, so they do not overlap with actions, sounds, LEDs, or stop requests.
+
+The default idle actions are soundless base motions:
+
+```text
+wag_tail, head_up_down, shake_head, tilting_head_left, tilting_head_right
+```
+
+Allowed idle actions are `wag_tail`, `head_up_down`, `shake_head`, `tilting_head_left`, `tilting_head_right`, `tilting_head`, `nod_lethargy`, and `doze_off`.
+
+Tune or disable idle animations with:
+
+```bash
+PIDOG_IDLE_ENABLED=false
+PIDOG_IDLE_ACTIONS=wag_tail,head_up_down
+PIDOG_IDLE_MIN_INTERVAL_SECONDS=8
+PIDOG_IDLE_MAX_INTERVAL_SECONDS=18
+PIDOG_IDLE_SPEED=60
+```
+
+`PIDOG_IDLE_ENABLED` defaults to enabled for the real backend and disabled for mock mode. Set `PIDOG_IDLE_ENABLED=true` to test idle animations in mock mode.
 
 If you want to develop off-device, use:
 

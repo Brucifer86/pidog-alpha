@@ -4,14 +4,30 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from time import sleep
-from typing import Any, Callable, Dict, Optional
+from time import monotonic, sleep
+from typing import Any, Callable, Dict, Optional, Sequence
 import os
+import random
 import sys
 import threading
 import uuid
 
 from .catalog import BASE_ACTIONS, COMPOSITE_ACTIONS, PROJECT_ROOT, resolve_sound_dir
+
+
+DEFAULT_IDLE_ACTIONS: tuple[str, ...] = (
+    "wag_tail",
+    "head_up_down",
+    "shake_head",
+    "tilting_head_left",
+    "tilting_head_right",
+)
+ALLOWED_IDLE_ACTIONS: tuple[str, ...] = (
+    *DEFAULT_IDLE_ACTIONS,
+    "tilting_head",
+    "nod_lethargy",
+    "doze_off",
+)
 
 
 def utc_now() -> str:
@@ -360,11 +376,119 @@ class JobRecord:
 
 
 class PidogCommandService:
-    def __init__(self, controller: BaseRobotController):
+    def __init__(
+        self,
+        controller: BaseRobotController,
+        idle_enabled: bool = False,
+        idle_actions: Optional[Sequence[str]] = None,
+        idle_min_interval_seconds: float = 8.0,
+        idle_max_interval_seconds: float = 18.0,
+        idle_speed: int = 60,
+    ):
         self.controller = controller
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pidog-api")
         self._jobs: Dict[str, JobRecord] = {}
         self._lock = threading.Lock()
+        self._idle_actions = self._validate_idle_actions(idle_actions or DEFAULT_IDLE_ACTIONS)
+        self._idle_enabled = idle_enabled and bool(self._idle_actions)
+        self._idle_min_interval_seconds = max(0.1, idle_min_interval_seconds)
+        self._idle_max_interval_seconds = max(self._idle_min_interval_seconds, idle_max_interval_seconds)
+        self._idle_speed = max(1, min(100, idle_speed))
+        self._idle_stop = threading.Event()
+        self._idle_future: Optional[Future] = None
+        self._idle_running = False
+        self._idle_run_count = 0
+        self._idle_error_count = 0
+        self._idle_last_action: Optional[str] = None
+        self._idle_last_started_at: Optional[str] = None
+        self._idle_last_completed_at: Optional[str] = None
+        self._idle_last_error: Optional[str] = None
+        self._last_user_activity_monotonic = monotonic()
+        self._idle_thread: Optional[threading.Thread] = None
+
+        if self._idle_enabled:
+            self._idle_thread = threading.Thread(
+                target=self._idle_loop,
+                name="pidog-idle",
+                daemon=True,
+            )
+            self._idle_thread.start()
+
+    @staticmethod
+    def _validate_idle_actions(actions: Sequence[str]) -> tuple[str, ...]:
+        valid_actions = []
+        for action in actions:
+            if action in ALLOWED_IDLE_ACTIONS and action in BASE_ACTIONS and action not in valid_actions:
+                valid_actions.append(action)
+        return tuple(valid_actions)
+
+    def _has_user_work_locked(self) -> bool:
+        return any(job.status in {"submitted", "running"} for job in self._jobs.values())
+
+    def _has_user_work(self) -> bool:
+        with self._lock:
+            return self._has_user_work_locked()
+
+    def _mark_user_activity_locked(self) -> None:
+        self._last_user_activity_monotonic = monotonic()
+        if self._idle_future is not None and not self._idle_future.running():
+            self._idle_future.cancel()
+
+    def _run_idle_action(self, action: str) -> Dict[str, Any]:
+        started_at = utc_now()
+        with self._lock:
+            self._idle_running = True
+            self._idle_last_action = action
+            self._idle_last_started_at = started_at
+            self._idle_last_error = None
+
+        try:
+            result = self.controller.run_action(action, speed=self._idle_speed, step_count=1)
+        except Exception as exc:
+            completed_at = utc_now()
+            with self._lock:
+                self._idle_running = False
+                self._idle_error_count += 1
+                self._idle_last_completed_at = completed_at
+                self._idle_last_error = str(exc)
+            raise
+
+        completed_at = utc_now()
+        with self._lock:
+            self._idle_running = False
+            self._idle_run_count += 1
+            self._idle_last_completed_at = completed_at
+        return result
+
+    def _idle_loop(self) -> None:
+        while not self._idle_stop.is_set():
+            interval = random.uniform(self._idle_min_interval_seconds, self._idle_max_interval_seconds)
+            if self._idle_stop.wait(interval):
+                return
+
+            with self._lock:
+                idle_time = monotonic() - self._last_user_activity_monotonic
+                if idle_time < self._idle_min_interval_seconds or self._has_user_work_locked():
+                    continue
+                action = random.choice(self._idle_actions)
+                future = self._executor.submit(self._run_idle_action, action)
+                self._idle_future = future
+
+            try:
+                while not future.done():
+                    if self._idle_stop.wait(0.1):
+                        future.cancel()
+                        return
+                    if self._has_user_work() and future.cancel():
+                        break
+                if not future.cancelled():
+                    future.result()
+            except Exception:
+                continue
+            finally:
+                with self._lock:
+                    if self._idle_future is future:
+                        self._idle_future = None
 
     def _run_job(self, job_id: str, operation: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
         with self._lock:
@@ -398,6 +522,7 @@ class PidogCommandService:
     ) -> Dict[str, Any]:
         job = JobRecord(id=str(uuid.uuid4()), kind=kind, payload=payload)
         with self._lock:
+            self._mark_user_activity_locked()
             self._jobs[job.id] = job
 
         job.future = self._executor.submit(self._run_job, job.id, operation)
@@ -431,6 +556,8 @@ class PidogCommandService:
         return {"cancelled_job_ids": cancelled_ids}
 
     def stop_now(self, lie_down: bool = False, speed: int = 80) -> Dict[str, Any]:
+        with self._lock:
+            self._mark_user_activity_locked()
         cancelled = self.cancel_pending_jobs()
         result = self.controller.stop(lie_down=lie_down, speed=speed)
         result.update(cancelled)
@@ -439,6 +566,22 @@ class PidogCommandService:
     def health(self) -> Dict[str, Any]:
         with self._lock:
             jobs = [job.snapshot() for job in self._jobs.values()]
+            idle = {
+                "enabled": self._idle_enabled,
+                "actions": list(self._idle_actions),
+                "running": self._idle_running,
+                "run_count": self._idle_run_count,
+                "error_count": self._idle_error_count,
+                "last_action": self._idle_last_action,
+                "last_started_at": self._idle_last_started_at,
+                "last_completed_at": self._idle_last_completed_at,
+                "last_error": self._idle_last_error,
+                "interval_seconds": {
+                    "min": self._idle_min_interval_seconds,
+                    "max": self._idle_max_interval_seconds,
+                },
+                "speed": self._idle_speed,
+            }
 
         return {
             "ok": True,
@@ -448,9 +591,13 @@ class PidogCommandService:
                 "running_jobs": len([job for job in jobs if job["status"] == "running"]),
                 "pending_jobs": len([job for job in jobs if job["status"] == "submitted"]),
             },
+            "idle": idle,
         }
 
     def close(self) -> None:
+        self._idle_stop.set()
+        if self._idle_thread is not None:
+            self._idle_thread.join(timeout=2)
         self.cancel_pending_jobs()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self.controller.close()

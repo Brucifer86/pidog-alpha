@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, root_validator
 from .auth import AuthError, create_access_token, verify_access_token, verify_password
 from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
 from .camera import CameraError, build_camera_service
-from .controller import ControllerError, PidogCommandService, build_controller
+from .controller import DEFAULT_IDLE_ACTIONS, ControllerError, PidogCommandService, build_controller
 
 
 bearer_auth = HTTPBearer(
@@ -46,6 +46,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional_bool(name: str) -> Optional[bool]:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return None
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return float(raw_value)
+
+
 @dataclass
 class Settings:
     mode: str
@@ -60,10 +74,16 @@ class Settings:
     auth_secret: str
     auth_token_ttl_seconds: int
     auth_disabled: bool
+    idle_enabled: Optional[bool]
+    idle_actions: List[str]
+    idle_min_interval_seconds: float
+    idle_max_interval_seconds: float
+    idle_speed: int
 
     @classmethod
     def from_env(cls) -> "Settings":
         raw_origins = os.getenv("PIDOG_API_CORS_ORIGINS", "*")
+        raw_idle_actions = os.getenv("PIDOG_IDLE_ACTIONS", ",".join(DEFAULT_IDLE_ACTIONS))
         return cls(
             mode=os.getenv("PIDOG_API_MODE", "auto").lower(),
             host=os.getenv("PIDOG_API_HOST", "0.0.0.0"),
@@ -77,6 +97,11 @@ class Settings:
             auth_secret=os.getenv("PIDOG_AUTH_SECRET", "").strip(),
             auth_token_ttl_seconds=int(os.getenv("PIDOG_AUTH_TOKEN_TTL_SECONDS", "43200")),
             auth_disabled=_env_bool("PIDOG_AUTH_DISABLED", default=False),
+            idle_enabled=_env_optional_bool("PIDOG_IDLE_ENABLED"),
+            idle_actions=[action.strip() for action in raw_idle_actions.split(",") if action.strip()],
+            idle_min_interval_seconds=_env_float("PIDOG_IDLE_MIN_INTERVAL_SECONDS", 8.0),
+            idle_max_interval_seconds=_env_float("PIDOG_IDLE_MAX_INTERVAL_SECONDS", 18.0),
+            idle_speed=int(os.getenv("PIDOG_IDLE_SPEED", "60")),
         )
 
     def login_configured(self) -> bool:
@@ -92,6 +117,11 @@ class Settings:
 
     def any_auth_configured(self) -> bool:
         return self.login_configured() or self.api_key_configured()
+
+    def idle_enabled_for(self, controller_mode: str) -> bool:
+        if self.idle_enabled is not None:
+            return self.idle_enabled
+        return controller_mode == "real"
 
 
 def get_settings() -> Settings:
@@ -320,7 +350,14 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     controller = build_controller(mode=settings.mode, sound_dir=settings.sound_dir)
     camera = build_camera_service(mode=settings.mode)
-    service = PidogCommandService(controller)
+    service = PidogCommandService(
+        controller,
+        idle_enabled=settings.idle_enabled_for(controller.mode),
+        idle_actions=settings.idle_actions,
+        idle_min_interval_seconds=settings.idle_min_interval_seconds,
+        idle_max_interval_seconds=settings.idle_max_interval_seconds,
+        idle_speed=settings.idle_speed,
+    )
 
     app.state.settings = settings
     app.state.service = service
