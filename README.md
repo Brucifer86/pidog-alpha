@@ -61,11 +61,67 @@ Optional environment variables:
 
 - `PIDOG_API_MODE=auto|real|mock`
 - `PIDOG_API_TOKEN=your-secret-token`
+- `PIDOG_AUTH_USERNAME=admin`
+- `PIDOG_AUTH_PASSWORD_HASH=pbkdf2_sha256$...`
+- `PIDOG_AUTH_PASSWORD=plain-text-password`
+- `PIDOG_AUTH_SECRET=long-random-signing-secret`
+- `PIDOG_AUTH_TOKEN_TTL_SECONDS=43200`
+- `PIDOG_AUTH_DISABLED=false`
 - `PIDOG_SOUND_DIR=/home/pi/pidog/sounds`
 - `PIDOG_PYTHONPATH=/custom/python/path:/another/path`
 - `PIDOG_CAMERA_COMMAND="rpicam-jpeg --nopreview --timeout 3000 -o -"`
 - `PIDOG_CAMERA_TIMEOUT_MS=3000`
 - `PIDOG_API_CORS_ORIGINS=http://your-ui.local,http://another-host`
+
+## Authentication
+
+In real mode, control endpoints require either a login token or `PIDOG_API_TOKEN`. Mock mode allows unauthenticated requests unless auth is configured.
+
+Generate a password hash:
+
+```bash
+.venv/bin/python -m pidog_alpha.auth hash-password
+```
+
+`PIDOG_AUTH_PASSWORD` is accepted for quick testing, but `PIDOG_AUTH_PASSWORD_HASH` is preferred for deployment.
+
+Generate a signing secret:
+
+```bash
+python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+```
+
+Start with login auth:
+
+```bash
+PIDOG_API_MODE=real \
+PIDOG_AUTH_USERNAME=admin \
+PIDOG_AUTH_PASSWORD_HASH='pbkdf2_sha256$...' \
+PIDOG_AUTH_SECRET='replace-with-generated-secret' \
+.venv/bin/python main.py
+```
+
+Login:
+
+```bash
+curl -X POST http://pidog.local:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-password"}'
+```
+
+Use the returned `access_token` on protected requests:
+
+```bash
+curl http://pidog.local:8000/status \
+  -H "Authorization: Bearer your-access-token"
+```
+
+`PIDOG_API_TOKEN` is still supported for automation. Send it as either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+
+Swagger UI at `/docs` includes Authorize options for both `BearerAuth` and `ApiKeyAuth`.
 
 If you want to develop off-device, use:
 
@@ -75,23 +131,10 @@ PIDOG_API_MODE=mock .venv/bin/python main.py
 
 ## Endpoints
 
-- `GET /health`
-- `GET /catalog`
-- `GET /status`
-- `GET /camera/snapshot`
-- `GET /jobs/{job_id}`
-- `GET /sounds`
-- `POST /actions/run`
-- `POST /sounds/play`
-- `POST /sounds/upload`
-- `DELETE /sounds/{name}`
-- `POST /leds/set`
-- `POST /stop`
-
-When `PIDOG_API_TOKEN` is set, send either:
-
-- `Authorization: Bearer <token>`
-- `X-API-Key: <token>`
+- Public: `GET /health`, `GET /catalog`, `POST /auth/login`, `POST /auth/logout`
+- Protected: `GET /auth/me`, `GET /status`, `GET /camera/snapshot`, `GET /jobs/{job_id}`
+- Protected: `GET /sounds`, `POST /actions/run`, `POST /sounds/play`, `POST /sounds/upload`, `DELETE /sounds/{name}`
+- Protected: `POST /leds/set`, `POST /stop`
 
 ## Example requests
 

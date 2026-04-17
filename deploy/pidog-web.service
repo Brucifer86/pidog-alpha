@@ -12,6 +12,9 @@ Environment=PIDOG_API_HOST=0.0.0.0
 Environment=PIDOG_API_PORT=8000
 # Optional:
 # Environment=PIDOG_API_TOKEN=replace-me
+# Environment=PIDOG_AUTH_USERNAME=admin
+# Environment=PIDOG_AUTH_PASSWORD_HASH=pbkdf2_sha256$...
+# Environment=PIDOG_AUTH_SECRET=replace-with-long-random-secret
 # Environment=PIDOG_SOUND_DIR=/home/pi/pidog/sounds
 ExecStart=/home/pi/pidog-alpha/.venv/bin/python /home/pi/pidog-alpha/main.py
 Restart=on-failure
@@ -19,4 +22,3 @@ RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-

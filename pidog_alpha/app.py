@@ -2,25 +2,48 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from hmac import compare_digest
 from pathlib import Path
 from time import sleep
 from typing import Any, Dict, List, Optional
 import os
 import re
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Security, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, root_validator
 
+from .auth import AuthError, create_access_token, verify_access_token, verify_password
 from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
 from .camera import CameraError, build_camera_service
 from .controller import ControllerError, PidogCommandService, build_controller
+
+
+bearer_auth = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="Use a login access token from /auth/login, or the legacy PIDOG_API_TOKEN value.",
+)
+x_api_key_auth = APIKeyHeader(
+    name="X-API-Key",
+    auto_error=False,
+    scheme_name="ApiKeyAuth",
+    description="Use the legacy PIDOG_API_TOKEN value.",
+)
 
 
 def _model_dump(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -31,6 +54,12 @@ class Settings:
     token: str
     sound_dir: Optional[str]
     cors_origins: List[str]
+    auth_username: str
+    auth_password_hash: str
+    auth_password: str
+    auth_secret: str
+    auth_token_ttl_seconds: int
+    auth_disabled: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -42,7 +71,27 @@ class Settings:
             token=os.getenv("PIDOG_API_TOKEN", "").strip(),
             sound_dir=os.getenv("PIDOG_SOUND_DIR"),
             cors_origins=[origin.strip() for origin in raw_origins.split(",") if origin.strip()],
+            auth_username=os.getenv("PIDOG_AUTH_USERNAME", "admin").strip(),
+            auth_password_hash=os.getenv("PIDOG_AUTH_PASSWORD_HASH", "").strip(),
+            auth_password=os.getenv("PIDOG_AUTH_PASSWORD", ""),
+            auth_secret=os.getenv("PIDOG_AUTH_SECRET", "").strip(),
+            auth_token_ttl_seconds=int(os.getenv("PIDOG_AUTH_TOKEN_TTL_SECONDS", "43200")),
+            auth_disabled=_env_bool("PIDOG_AUTH_DISABLED", default=False),
         )
+
+    def login_configured(self) -> bool:
+        return bool(
+            self.auth_username
+            and self.auth_secret
+            and self.auth_token_ttl_seconds > 0
+            and (self.auth_password_hash or self.auth_password)
+        )
+
+    def api_key_configured(self) -> bool:
+        return bool(self.token)
+
+    def any_auth_configured(self) -> bool:
+        return self.login_configured() or self.api_key_configured()
 
 
 def get_settings() -> Settings:
@@ -60,6 +109,17 @@ class SoundRequest(BaseModel):
     name: str
     volume: int = Field(default=100, ge=0, le=100)
     wait: bool = Field(default=False, description="Use blocking playback if true.")
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
 
 class LedRequest(BaseModel):
@@ -87,27 +147,75 @@ class StopRequest(BaseModel):
     speed: int = Field(default=80, ge=1, le=100)
 
 
-def require_api_token(
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
-    x_api_key: Optional[str] = Header(default=None),
-) -> None:
-    expected = request.app.state.settings.token
-    if not expected:
-        return None
+def _auth_required_without_configuration(request: Request) -> bool:
+    settings = request.app.state.settings
+    controller = getattr(getattr(request.app.state, "service", None), "controller", None)
+    controller_mode = getattr(controller, "mode", settings.mode)
+    return settings.mode == "real" or controller_mode == "real"
 
-    bearer_token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        bearer_token = authorization[7:].strip()
 
-    if x_api_key == expected or bearer_token == expected:
-        return None
-
-    raise HTTPException(
+def _unauthorized(detail: str = "Missing or invalid credentials.") -> HTTPException:
+    return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing or invalid API token.",
+        detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def _validate_login_credentials(settings: Settings, payload: LoginRequest) -> None:
+    if payload.username != settings.auth_username:
+        raise _unauthorized()
+
+    if settings.auth_password_hash:
+        if verify_password(payload.password, settings.auth_password_hash):
+            return None
+        raise _unauthorized()
+
+    if settings.auth_password and compare_digest(payload.password, settings.auth_password):
+        return None
+
+    raise _unauthorized()
+
+
+def require_authentication(
+    request: Request,
+    bearer: Optional[HTTPAuthorizationCredentials] = Security(bearer_auth),
+    x_api_key: Optional[str] = Security(x_api_key_auth),
+) -> None:
+    settings = request.app.state.settings
+
+    if settings.auth_disabled:
+        return None
+
+    if settings.token and x_api_key and x_api_key == settings.token:
+        return None
+
+    bearer_token = bearer.credentials if bearer is not None else None
+    if settings.token and bearer_token and bearer_token == settings.token:
+        return None
+
+    login_token = bearer_token or request.cookies.get("pidog_access_token")
+    if login_token and settings.login_configured():
+        try:
+            verify_access_token(
+                token=login_token,
+                secret=settings.auth_secret,
+                expected_username=settings.auth_username,
+            )
+        except AuthError as exc:
+            raise _unauthorized(str(exc)) from exc
+        return None
+
+    if settings.any_auth_configured():
+        raise _unauthorized()
+
+    if _auth_required_without_configuration(request):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication is required in real mode. Configure PIDOG_AUTH_* credentials or PIDOG_API_TOKEN.",
+        )
+
+    return None
 
 
 def _validate_action(app: FastAPI, name: str) -> None:
@@ -261,7 +369,46 @@ def create_app() -> FastAPI:
     def catalog(request: Request) -> Dict[str, Any]:
         return request.app.state.catalog
 
-    @app.get("/status", dependencies=[Depends(require_api_token)])
+    @app.post("/auth/login", response_model=LoginResponse, tags=["auth"])
+    def login(payload: LoginRequest, response: Response, request: Request) -> LoginResponse:
+        settings = request.app.state.settings
+        if settings.auth_disabled:
+            raise HTTPException(status_code=403, detail="Authentication is disabled.")
+        if not settings.login_configured():
+            raise HTTPException(status_code=503, detail="Login authentication is not configured.")
+
+        _validate_login_credentials(settings, payload)
+        token = create_access_token(
+            username=settings.auth_username,
+            secret=settings.auth_secret,
+            ttl_seconds=settings.auth_token_ttl_seconds,
+        )
+        response.set_cookie(
+            key="pidog_access_token",
+            value=token,
+            max_age=settings.auth_token_ttl_seconds,
+            httponly=True,
+            samesite="lax",
+        )
+        return LoginResponse(access_token=token, expires_in=settings.auth_token_ttl_seconds)
+
+    @app.post("/auth/logout", tags=["auth"])
+    def logout(response: Response) -> Dict[str, Any]:
+        response.delete_cookie(key="pidog_access_token")
+        return {"ok": True}
+
+    @app.get("/auth/me", tags=["auth"], dependencies=[Security(require_authentication)])
+    def auth_me(request: Request) -> Dict[str, Any]:
+        settings = request.app.state.settings
+        return {
+            "authenticated": not settings.auth_disabled and settings.any_auth_configured(),
+            "username": settings.auth_username if settings.login_configured() else None,
+            "login_configured": settings.login_configured(),
+            "api_key_configured": settings.api_key_configured(),
+            "mode": request.app.state.service.controller.mode,
+        }
+
+    @app.get("/status", dependencies=[Security(require_authentication)])
     def status_snapshot(request: Request) -> Dict[str, Any]:
         return {
             "catalog_size": {
@@ -272,14 +419,14 @@ def create_app() -> FastAPI:
             "camera": request.app.state.camera.status(),
         }
 
-    @app.get("/jobs/{job_id}", dependencies=[Depends(require_api_token)])
+    @app.get("/jobs/{job_id}", dependencies=[Security(require_authentication)])
     def get_job(job_id: str, request: Request) -> Dict[str, Any]:
         try:
             return request.app.state.service.get_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Unknown job.") from exc
 
-    @app.post("/actions/run", dependencies=[Depends(require_api_token)])
+    @app.post("/actions/run", dependencies=[Security(require_authentication)])
     def run_action(payload: ActionRequest, request: Request) -> Dict[str, Any]:
         _validate_action(request.app, payload.name)
 
@@ -300,7 +447,7 @@ def create_app() -> FastAPI:
         except ControllerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/sounds/play", dependencies=[Depends(require_api_token)])
+    @app.post("/sounds/play", dependencies=[Security(require_authentication)])
     def play_sound(payload: SoundRequest, request: Request) -> Dict[str, Any]:
         _validate_sound(request.app, payload.name)
 
@@ -321,11 +468,11 @@ def create_app() -> FastAPI:
         except ControllerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/sounds", dependencies=[Depends(require_api_token)])
+    @app.get("/sounds", dependencies=[Security(require_authentication)])
     def list_playable_sounds(request: Request) -> Dict[str, Any]:
         return _sound_list_response(request)
 
-    @app.post("/sounds/upload", dependencies=[Depends(require_api_token)])
+    @app.post("/sounds/upload", dependencies=[Security(require_authentication)])
     async def upload_sound(
         request: Request,
         file: UploadFile = File(description="MP3 file to add to the sound catalog."),
@@ -365,7 +512,7 @@ def create_app() -> FastAPI:
             "mode": request.app.state.service.controller.mode,
         }
 
-    @app.delete("/sounds/{name}", dependencies=[Depends(require_api_token)])
+    @app.delete("/sounds/{name}", dependencies=[Security(require_authentication)])
     def delete_sound(name: str, request: Request) -> Dict[str, Any]:
         service = request.app.state.service
         sound_file = _sound_file_for_delete(service.controller.sound_dir, name)
@@ -393,7 +540,7 @@ def create_app() -> FastAPI:
 
     @app.get(
         "/camera/snapshot",
-        dependencies=[Depends(require_api_token)],
+        dependencies=[Security(require_authentication)],
         responses={200: {"content": {"image/jpeg": {}}}},
     )
     def camera_snapshot(request: Request) -> Response:
@@ -409,7 +556,7 @@ def create_app() -> FastAPI:
             headers["X-Camera-Backend"] = str(backend)
         return Response(content=payload, media_type="image/jpeg", headers=headers)
 
-    @app.post("/leds/set", dependencies=[Depends(require_api_token)])
+    @app.post("/leds/set", dependencies=[Security(require_authentication)])
     def set_led(payload: LedRequest, request: Request) -> Dict[str, Any]:
         _validate_led_style(payload.style)
 
@@ -426,7 +573,7 @@ def create_app() -> FastAPI:
         except ControllerError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/stop", dependencies=[Depends(require_api_token)])
+    @app.post("/stop", dependencies=[Security(require_authentication)])
     def stop_robot(payload: StopRequest, request: Request) -> Dict[str, Any]:
         return request.app.state.service.stop_now(
             lie_down=payload.lie_down,
