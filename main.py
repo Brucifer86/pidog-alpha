@@ -1,8 +1,22 @@
+import logging
+import os
 import sys
 from textwrap import dedent
 
 
+def configure_logging() -> str:
+    log_level = os.getenv("PIDOG_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, log_level, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    return logging.getLevelName(level).lower()
+
+
 def main():
+    uvicorn_log_level = configure_logging()
+
     try:
         import uvicorn
         from pidog_alpha.app import get_settings
@@ -29,12 +43,20 @@ def main():
         return 1
 
     settings = get_settings()
+    logging.getLogger(__name__).info(
+        "Starting PiDog API mode=%s host=%s port=%s log_level=%s",
+        settings.mode,
+        settings.host,
+        settings.port,
+        uvicorn_log_level,
+    )
     uvicorn.run(
         "pidog_alpha.app:create_app",
         factory=True,
         host=settings.host,
         port=settings.port,
         reload=False,
+        log_level=uvicorn_log_level,
     )
     return 0
 

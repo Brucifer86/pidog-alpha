@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+import logging
 import os
 import shlex
 import shutil
 import subprocess
 
+
+logger = logging.getLogger(__name__)
 
 class CameraError(RuntimeError):
     """Raised when the camera backend cannot satisfy a snapshot request."""
@@ -115,6 +118,7 @@ class CommandCameraService(BaseCameraService):
                 continue
 
             try:
+                logger.debug("Trying camera backend=%s", executable)
                 completed = subprocess.run(
                     command,
                     check=True,
@@ -122,23 +126,28 @@ class CommandCameraService(BaseCameraService):
                     timeout=max(1, self.settings.timeout_ms) / 1000.0 + 2.0,
                 )
             except subprocess.TimeoutExpired:
+                logger.warning("Camera backend timed out backend=%s", executable)
                 failures.append(f"{executable}: timed out")
                 continue
             except subprocess.CalledProcessError as exc:
                 stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning("Camera backend failed backend=%s error=%s", executable, stderr or "command failed")
                 failures.append(f"{executable}: {stderr or 'command failed'}")
                 continue
 
             payload = completed.stdout
             if not payload or not _jpeg_looks_valid(payload):
+                logger.warning("Camera backend returned invalid JPEG backend=%s size_bytes=%d", executable, len(payload))
                 failures.append(f"{executable}: did not return a valid JPEG")
                 continue
 
             self._last_backend = executable
             self._last_error = None
+            logger.info("Camera snapshot succeeded backend=%s size_bytes=%d", executable, len(payload))
             return payload
 
         self._last_error = "; ".join(failures) if failures else "No camera backend is available."
+        logger.warning("Camera snapshot unavailable: %s", self._last_error)
         raise CameraError(self._last_error)
 
 

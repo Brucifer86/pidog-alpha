@@ -6,6 +6,7 @@ from hmac import compare_digest
 from pathlib import Path
 from time import sleep
 from typing import Any, Dict, List, Optional
+import logging
 import os
 import re
 
@@ -26,6 +27,8 @@ from .controller import (
     build_controller,
 )
 
+
+logger = logging.getLogger(__name__)
 
 bearer_auth = HTTPBearer(
     auto_error=False,
@@ -218,16 +221,19 @@ def _unauthorized(detail: str = "Missing or invalid credentials.") -> HTTPExcept
 
 def _validate_login_credentials(settings: Settings, payload: LoginRequest) -> None:
     if payload.username != settings.auth_username:
+        logger.warning("Login failed for unknown username=%s", payload.username)
         raise _unauthorized()
 
     if settings.auth_password_hash:
         if verify_password(payload.password, settings.auth_password_hash):
             return None
+        logger.warning("Login failed for username=%s", payload.username)
         raise _unauthorized()
 
     if settings.auth_password and compare_digest(payload.password, settings.auth_password):
         return None
 
+    logger.warning("Login failed for username=%s", payload.username)
     raise _unauthorized()
 
 
@@ -296,6 +302,7 @@ def _sanitize_sound_name(raw_name: str) -> str:
 
 
 async def _save_upload_file(upload: UploadFile, destination: Path) -> int:
+    logger.info("Saving sound upload destination=%s", destination)
     size = 0
     with destination.open("wb") as output:
         while True:
@@ -341,6 +348,14 @@ def _sound_list_response(request: Request) -> Dict[str, Any]:
 
 
 def _set_led_with_runtime(service: PidogCommandService, payload: LedRequest) -> Dict[str, Any]:
+    logger.info(
+        "Setting LED style=%s color=%s brightness=%.2f bps=%.2f runtime_seconds=%s",
+        payload.style,
+        payload.color,
+        payload.brightness,
+        payload.bps,
+        payload.runtime_seconds,
+    )
     result = service.controller.set_led(
         style=payload.style,
         color=payload.color,
@@ -352,6 +367,7 @@ def _set_led_with_runtime(service: PidogCommandService, payload: LedRequest) -> 
         return result
 
     sleep(payload.runtime_seconds)
+    logger.info("Turning LED off after runtime_seconds=%.2f", payload.runtime_seconds)
     off_result = service.controller.set_led(
         style="off",
         color="black",
@@ -374,6 +390,13 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     controller = build_controller(mode=settings.mode, sound_dir=settings.sound_dir)
     camera = build_camera_service(mode=settings.mode)
+    logger.info(
+        "Application startup requested_mode=%s controller_mode=%s auth_configured=%s camera_mode=%s",
+        settings.mode,
+        controller.mode,
+        settings.any_auth_configured(),
+        camera.mode,
+    )
     service = PidogCommandService(
         controller,
         idle_enabled=settings.idle_enabled_for(controller.mode),
@@ -393,6 +416,7 @@ async def lifespan(app: FastAPI):
     app.state.camera = camera
     app.state.catalog = build_catalog(controller.sound_dir)
     yield
+    logger.info("Application shutdown")
     camera.close()
     service.close()
 
@@ -444,6 +468,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="Login authentication is not configured.")
 
         _validate_login_credentials(settings, payload)
+        logger.info("Login succeeded for username=%s", payload.username)
         token = create_access_token(
             username=settings.auth_username,
             secret=settings.auth_secret,
@@ -563,9 +588,11 @@ def create_app() -> FastAPI:
         except Exception as exc:
             if destination.exists():
                 destination.unlink(missing_ok=True)
+            logger.exception("Failed to store sound upload name=%s destination=%s", sound_name, destination)
             raise HTTPException(status_code=500, detail=f"Failed to store uploaded sound: {exc}") from exc
 
         _refresh_catalog(request.app, sound_dir)
+        logger.info("Uploaded sound name=%s filename=%s size_bytes=%d", sound_name, destination.name, size)
         return {
             "ok": True,
             "sound": {
@@ -588,10 +615,12 @@ def create_app() -> FastAPI:
         try:
             sound_file.unlink()
         except OSError as exc:
+            logger.exception("Failed to delete sound name=%s filename=%s", name, sound_file)
             raise HTTPException(status_code=500, detail=f"Failed to delete sound: {exc}") from exc
 
         _refresh_catalog(request.app, service.controller.sound_dir)
         sounds = request.app.state.catalog["sounds"]
+        logger.info("Deleted sound name=%s filename=%s", name, sound_file.name)
         return {
             "ok": True,
             "deleted": {
@@ -613,10 +642,12 @@ def create_app() -> FastAPI:
         try:
             payload = request.app.state.camera.snapshot()
         except CameraError as exc:
+            logger.warning("Camera snapshot failed: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         status_data = request.app.state.camera.status()
         backend = status_data.get("last_backend")
+        logger.info("Camera snapshot captured backend=%s size_bytes=%d", backend or "unknown", len(payload))
         headers = {"Cache-Control": "no-store"}
         if backend:
             headers["X-Camera-Backend"] = str(backend)

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional, Sequence
+import logging
 import os
 import random
 import sys
@@ -22,6 +23,8 @@ from .catalog import (
     resolve_sound_dir,
 )
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_ACTIONS: tuple[str, ...] = (
     "wag_tail",
@@ -230,6 +233,7 @@ class RealRobotController(BaseRobotController):
     mode = "real"
 
     def __init__(self, sound_dir: Optional[Path]):
+        logger.info("Initializing real PiDog backend")
         added_paths = _prepare_backend_imports()
 
         from pidog import Pidog
@@ -250,6 +254,11 @@ class RealRobotController(BaseRobotController):
             backend_source = added_paths[0]
 
         super().__init__(sound_dir=sound_dir, backend_source=backend_source)
+        logger.info(
+            "Using PiDog backend source=%s sound_dir=%s",
+            backend_source or "unknown",
+            str(sound_dir) if sound_dir else "default",
+        )
 
         self._dog = Pidog()
         self._last_action: Optional[Dict[str, Any]] = None
@@ -375,6 +384,7 @@ def build_controller(mode: str = "auto", sound_dir: Optional[str] = None) -> Bas
     resolved_sound_dir = resolve_sound_dir(sound_dir)
 
     if mode == "mock":
+        logger.info("Using mock PiDog backend")
         return MockRobotController(sound_dir=resolved_sound_dir)
 
     if mode == "real":
@@ -383,6 +393,7 @@ def build_controller(mode: str = "auto", sound_dir: Optional[str] = None) -> Bas
     try:
         return RealRobotController(sound_dir=resolved_sound_dir)
     except Exception as exc:
+        logger.warning("Real PiDog backend unavailable; falling back to mock mode: %s", exc)
         return MockRobotController(sound_dir=resolved_sound_dir, init_error=str(exc))
 
 
@@ -456,12 +467,23 @@ class PidogCommandService:
         self._idle_thread: Optional[threading.Thread] = None
 
         if self._idle_enabled:
+            logger.info(
+                "Idle animations enabled actions=%s interval=%.1f-%.1fs speed=%d led_enabled=%s led_styles=%s",
+                ",".join(self._idle_actions),
+                self._idle_min_interval_seconds,
+                self._idle_max_interval_seconds,
+                self._idle_speed,
+                self._idle_led_enabled,
+                ",".join(self._idle_led_styles),
+            )
             self._idle_thread = threading.Thread(
                 target=self._idle_loop,
                 name="pidog-idle",
                 daemon=True,
             )
             self._idle_thread.start()
+        else:
+            logger.info("Idle animations disabled")
 
     @staticmethod
     def _validate_idle_actions(actions: Sequence[str]) -> tuple[str, ...]:
@@ -495,6 +517,22 @@ class PidogCommandService:
             "brightness": self._idle_led_brightness,
         }
 
+    @staticmethod
+    def _format_idle_led(led: Optional[Dict[str, Any]]) -> str:
+        if led is None:
+            return "led=off"
+        return (
+            "led={style}/{color} brightness={brightness:.2f} bps={bps:.2f}".format(
+                style=led["style"],
+                color=led["color"],
+                brightness=led["brightness"],
+                bps=led["bps"],
+            )
+        )
+
+    def _log_idle_event(self, message: str) -> None:
+        logger.info("idle: %s", message)
+
     def _has_user_work_locked(self) -> bool:
         return any(job.status in {"submitted", "running"} for job in self._jobs.values())
 
@@ -509,6 +547,7 @@ class PidogCommandService:
 
     def _run_idle_action(self, action: str) -> Dict[str, Any]:
         started_at = utc_now()
+        started_monotonic = monotonic()
         led: Optional[Dict[str, Any]] = None
         with self._lock:
             self._idle_running = True
@@ -522,6 +561,7 @@ class PidogCommandService:
                 self.controller.set_led(**led)
                 with self._lock:
                     self._idle_last_led = led
+            self._log_idle_event(f"start action={action} {self._format_idle_led(led)}")
 
             result = self.controller.run_action(action, speed=self._idle_speed, step_count=1)
             if self._idle_led_enabled:
@@ -538,13 +578,16 @@ class PidogCommandService:
                 self._idle_error_count += 1
                 self._idle_last_completed_at = completed_at
                 self._idle_last_error = str(exc)
+            logger.exception("idle: error action=%s", action)
             raise
 
         completed_at = utc_now()
+        elapsed_seconds = monotonic() - started_monotonic
         with self._lock:
             self._idle_running = False
             self._idle_run_count += 1
             self._idle_last_completed_at = completed_at
+        self._log_idle_event(f"done action={action} elapsed={elapsed_seconds:.2f}s")
         return result
 
     def _idle_loop(self) -> None:
@@ -592,6 +635,7 @@ class PidogCommandService:
                 job.status = "failed"
                 job.completed_at = utc_now()
                 job.error = str(exc)
+            logger.exception("Job failed id=%s kind=%s", job_id, job.kind)
             raise
 
         with self._lock:
@@ -599,6 +643,7 @@ class PidogCommandService:
             job.status = "completed"
             job.completed_at = utc_now()
             job.result = result
+        logger.info("Job completed id=%s kind=%s", job_id, job.kind)
         return result
 
     def submit(
@@ -613,6 +658,7 @@ class PidogCommandService:
             self._mark_user_activity_locked()
             self._jobs[job.id] = job
 
+        logger.info("Job submitted id=%s kind=%s wait=%s", job.id, kind, wait)
         job.future = self._executor.submit(self._run_job, job.id, operation)
 
         if wait:
@@ -644,6 +690,7 @@ class PidogCommandService:
         return {"cancelled_job_ids": cancelled_ids}
 
     def stop_now(self, lie_down: bool = False, speed: int = 80) -> Dict[str, Any]:
+        logger.warning("Stop requested lie_down=%s speed=%d", lie_down, speed)
         with self._lock:
             self._mark_user_activity_locked()
         cancelled = self.cancel_pending_jobs()

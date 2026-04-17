@@ -9,6 +9,8 @@ The API is designed for robot-side deployment:
 - An optional API token can protect all control endpoints.
 - The catalog endpoint publishes the supported action names, sounds, and LED styles.
 
+Set `PIDOG_LOG_LEVEL=DEBUG`, `INFO`, `WARNING`, or `ERROR` to control server console logging.
+
 ## Upstream PiDog setup
 
 Install the official SunFounder dependencies on the Pi first. Their repo and docs are here:
@@ -60,6 +62,7 @@ PIDOG_API_PORT=8000 \
 Optional environment variables:
 
 - `PIDOG_API_MODE=auto|real|mock`
+- `PIDOG_LOG_LEVEL=INFO`
 - `PIDOG_API_TOKEN=your-secret-token`
 - `PIDOG_AUTH_USERNAME=admin`
 - `PIDOG_AUTH_PASSWORD_HASH=pbkdf2_sha256$...`
@@ -138,6 +141,8 @@ Swagger UI at `/docs` includes Authorize options for both `BearerAuth` and `ApiK
 When the real PiDog backend is active, the service runs quiet idle animations while no user command is queued or running. Idle animations use the same single command worker as API commands, so they do not overlap with actions, sounds, LEDs, or stop requests.
 
 Each idle animation also gets a random LED style and color. When the idle animation is done, the service turns the LED strip back off with black at zero brightness.
+
+Idle animations are printed to the server console as they start and finish, including the selected action and LED pattern.
 
 The default idle actions are soundless base motions:
 
