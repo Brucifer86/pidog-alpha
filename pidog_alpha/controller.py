@@ -40,7 +40,11 @@ DEFAULT_IDLE_LED_STYLES: tuple[str, ...] = (
     "breath",
     "boom",
     "listen",
-    "monochromatic",
+)
+ALLOWED_IDLE_LED_STYLES: tuple[str, ...] = (
+    *DEFAULT_IDLE_LED_STYLES,
+    "bark",
+    "speak",
 )
 DEFAULT_IDLE_LED_COLORS: tuple[str, ...] = (
     "white",
@@ -471,7 +475,7 @@ class PidogCommandService:
     def _validate_idle_led_styles(styles: Sequence[str]) -> tuple[str, ...]:
         valid_styles = []
         for style in styles:
-            if style in LED_STYLES and style != "off" and style not in valid_styles:
+            if style in ALLOWED_IDLE_LED_STYLES and style not in valid_styles:
                 valid_styles.append(style)
         return tuple(valid_styles)
 

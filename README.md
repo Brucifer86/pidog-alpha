@@ -73,7 +73,7 @@ Optional environment variables:
 - `PIDOG_IDLE_MAX_INTERVAL_SECONDS=18`
 - `PIDOG_IDLE_SPEED=60`
 - `PIDOG_IDLE_LED_ENABLED=true|false`
-- `PIDOG_IDLE_LED_STYLES=breath,boom,listen,monochromatic`
+- `PIDOG_IDLE_LED_STYLES=breath,boom,listen`
 - `PIDOG_IDLE_LED_COLORS=white,red,yellow,green,blue,cyan,magenta,pink`
 - `PIDOG_IDLE_LED_BRIGHTNESS=0.35`
 - `PIDOG_IDLE_LED_BPS=1.0`
@@ -156,13 +156,15 @@ PIDOG_IDLE_MIN_INTERVAL_SECONDS=8
 PIDOG_IDLE_MAX_INTERVAL_SECONDS=18
 PIDOG_IDLE_SPEED=60
 PIDOG_IDLE_LED_ENABLED=true
-PIDOG_IDLE_LED_STYLES=breath,boom,listen,monochromatic
+PIDOG_IDLE_LED_STYLES=breath,boom,listen
 PIDOG_IDLE_LED_COLORS=white,red,yellow,green,blue,cyan,magenta,pink
 PIDOG_IDLE_LED_BRIGHTNESS=0.35
 PIDOG_IDLE_LED_BPS=1.0
 ```
 
 `PIDOG_IDLE_ENABLED` defaults to enabled for the real backend and disabled for mock mode. Set `PIDOG_IDLE_ENABLED=true` to test idle animations in mock mode.
+
+Idle LED styles are limited to `breath`, `boom`, `listen`, `bark`, and `speak`. The upstream solid-color `monochromatic` style is still available through `/leds/set`, but it is skipped for idle animations because some PiDog RGB strip versions raise an internal worker exception for that pattern.
 
 If you want to develop off-device, use:
 
