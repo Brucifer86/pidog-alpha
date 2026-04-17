@@ -72,6 +72,11 @@ Optional environment variables:
 - `PIDOG_IDLE_MIN_INTERVAL_SECONDS=8`
 - `PIDOG_IDLE_MAX_INTERVAL_SECONDS=18`
 - `PIDOG_IDLE_SPEED=60`
+- `PIDOG_IDLE_LED_ENABLED=true|false`
+- `PIDOG_IDLE_LED_STYLES=breath,boom,listen,monochromatic`
+- `PIDOG_IDLE_LED_COLORS=white,red,yellow,green,blue,cyan,magenta,pink`
+- `PIDOG_IDLE_LED_BRIGHTNESS=0.35`
+- `PIDOG_IDLE_LED_BPS=1.0`
 - `PIDOG_SOUND_DIR=/home/pi/pidog/sounds`
 - `PIDOG_PYTHONPATH=/custom/python/path:/another/path`
 - `PIDOG_CAMERA_COMMAND="rpicam-jpeg --nopreview --timeout 3000 -o -"`
@@ -132,6 +137,8 @@ Swagger UI at `/docs` includes Authorize options for both `BearerAuth` and `ApiK
 
 When the real PiDog backend is active, the service runs quiet idle animations while no user command is queued or running. Idle animations use the same single command worker as API commands, so they do not overlap with actions, sounds, LEDs, or stop requests.
 
+Each idle animation also gets a random LED style and color. When the idle animation is done, the service turns the LED strip back off with black at zero brightness.
+
 The default idle actions are soundless base motions:
 
 ```text
@@ -148,6 +155,11 @@ PIDOG_IDLE_ACTIONS=wag_tail,head_up_down
 PIDOG_IDLE_MIN_INTERVAL_SECONDS=8
 PIDOG_IDLE_MAX_INTERVAL_SECONDS=18
 PIDOG_IDLE_SPEED=60
+PIDOG_IDLE_LED_ENABLED=true
+PIDOG_IDLE_LED_STYLES=breath,boom,listen,monochromatic
+PIDOG_IDLE_LED_COLORS=white,red,yellow,green,blue,cyan,magenta,pink
+PIDOG_IDLE_LED_BRIGHTNESS=0.35
+PIDOG_IDLE_LED_BPS=1.0
 ```
 
 `PIDOG_IDLE_ENABLED` defaults to enabled for the real backend and disabled for mock mode. Set `PIDOG_IDLE_ENABLED=true` to test idle animations in mock mode.
@@ -202,6 +214,8 @@ curl -X POST http://pidog.local:8000/actions/run \
   -H "Authorization: Bearer your-secret-token" \
   -d '{"name":"sit","speed":80,"step_count":1,"wait":true}'
 ```
+
+Use `laydown` to run the built-in `lie` action with a more natural name.
 
 Play a sound:
 

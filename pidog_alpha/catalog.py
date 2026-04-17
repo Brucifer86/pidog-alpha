@@ -31,6 +31,10 @@ BASE_ACTIONS: Dict[str, str] = {
     "half_sit": "Move into the half-sit transition pose.",
 }
 
+ACTION_ALIASES: Dict[str, str] = {
+    "laydown": "lie",
+}
+
 COMPOSITE_ACTIONS: Dict[str, str] = {
     "bark": "Bark once with the preset bark animation.",
     "bark_harder": "Bark more aggressively with body motion and sound.",
@@ -128,6 +132,12 @@ def build_catalog(sound_dir: Optional[Path]) -> Dict[str, object]:
     actions = {}
     for name, description in BASE_ACTIONS.items():
         actions[name] = {"kind": "base", "description": description}
+    for name, target in ACTION_ALIASES.items():
+        actions[name] = {
+            "kind": "alias",
+            "target": target,
+            "description": f"Alias for {target}.",
+        }
     for name, description in COMPOSITE_ACTIONS.items():
         actions[name] = {"kind": "composite", "description": description}
 

@@ -18,6 +18,8 @@ Environment=PIDOG_API_PORT=8000
 # Environment=PIDOG_IDLE_ENABLED=true
 # Environment=PIDOG_IDLE_MIN_INTERVAL_SECONDS=8
 # Environment=PIDOG_IDLE_MAX_INTERVAL_SECONDS=18
+# Environment=PIDOG_IDLE_LED_ENABLED=true
+# Environment=PIDOG_IDLE_LED_BRIGHTNESS=0.35
 # Environment=PIDOG_SOUND_DIR=/home/pi/pidog/sounds
 ExecStart=/home/pi/pidog-alpha/.venv/bin/python /home/pi/pidog-alpha/main.py
 Restart=on-failure

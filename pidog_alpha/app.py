@@ -17,7 +17,14 @@ from pydantic import BaseModel, Field, root_validator
 from .auth import AuthError, create_access_token, verify_access_token, verify_password
 from .catalog import LED_STYLES, build_catalog, ensure_sound_dir
 from .camera import CameraError, build_camera_service
-from .controller import DEFAULT_IDLE_ACTIONS, ControllerError, PidogCommandService, build_controller
+from .controller import (
+    DEFAULT_IDLE_ACTIONS,
+    DEFAULT_IDLE_LED_COLORS,
+    DEFAULT_IDLE_LED_STYLES,
+    ControllerError,
+    PidogCommandService,
+    build_controller,
+)
 
 
 bearer_auth = HTTPBearer(
@@ -79,11 +86,18 @@ class Settings:
     idle_min_interval_seconds: float
     idle_max_interval_seconds: float
     idle_speed: int
+    idle_led_enabled: Optional[bool]
+    idle_led_styles: List[str]
+    idle_led_colors: List[str]
+    idle_led_brightness: float
+    idle_led_bps: float
 
     @classmethod
     def from_env(cls) -> "Settings":
         raw_origins = os.getenv("PIDOG_API_CORS_ORIGINS", "*")
         raw_idle_actions = os.getenv("PIDOG_IDLE_ACTIONS", ",".join(DEFAULT_IDLE_ACTIONS))
+        raw_idle_led_styles = os.getenv("PIDOG_IDLE_LED_STYLES", ",".join(DEFAULT_IDLE_LED_STYLES))
+        raw_idle_led_colors = os.getenv("PIDOG_IDLE_LED_COLORS", ",".join(DEFAULT_IDLE_LED_COLORS))
         return cls(
             mode=os.getenv("PIDOG_API_MODE", "auto").lower(),
             host=os.getenv("PIDOG_API_HOST", "0.0.0.0"),
@@ -102,6 +116,11 @@ class Settings:
             idle_min_interval_seconds=_env_float("PIDOG_IDLE_MIN_INTERVAL_SECONDS", 8.0),
             idle_max_interval_seconds=_env_float("PIDOG_IDLE_MAX_INTERVAL_SECONDS", 18.0),
             idle_speed=int(os.getenv("PIDOG_IDLE_SPEED", "60")),
+            idle_led_enabled=_env_optional_bool("PIDOG_IDLE_LED_ENABLED"),
+            idle_led_styles=[style.strip() for style in raw_idle_led_styles.split(",") if style.strip()],
+            idle_led_colors=[color.strip() for color in raw_idle_led_colors.split(",") if color.strip()],
+            idle_led_brightness=_env_float("PIDOG_IDLE_LED_BRIGHTNESS", 0.35),
+            idle_led_bps=_env_float("PIDOG_IDLE_LED_BPS", 1.0),
         )
 
     def login_configured(self) -> bool:
@@ -122,6 +141,11 @@ class Settings:
         if self.idle_enabled is not None:
             return self.idle_enabled
         return controller_mode == "real"
+
+    def idle_led_enabled_for(self, controller_mode: str) -> bool:
+        if self.idle_led_enabled is not None:
+            return self.idle_led_enabled
+        return self.idle_enabled_for(controller_mode)
 
 
 def get_settings() -> Settings:
@@ -357,6 +381,11 @@ async def lifespan(app: FastAPI):
         idle_min_interval_seconds=settings.idle_min_interval_seconds,
         idle_max_interval_seconds=settings.idle_max_interval_seconds,
         idle_speed=settings.idle_speed,
+        idle_led_enabled=settings.idle_led_enabled_for(controller.mode),
+        idle_led_styles=settings.idle_led_styles,
+        idle_led_colors=settings.idle_led_colors,
+        idle_led_brightness=settings.idle_led_brightness,
+        idle_led_bps=settings.idle_led_bps,
     )
 
     app.state.settings = settings

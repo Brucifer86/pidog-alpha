@@ -12,7 +12,15 @@ import sys
 import threading
 import uuid
 
-from .catalog import BASE_ACTIONS, COMPOSITE_ACTIONS, PROJECT_ROOT, resolve_sound_dir
+from .catalog import (
+    ACTION_ALIASES,
+    BASE_ACTIONS,
+    COMPOSITE_ACTIONS,
+    LED_COLORS,
+    LED_STYLES,
+    PROJECT_ROOT,
+    resolve_sound_dir,
+)
 
 
 DEFAULT_IDLE_ACTIONS: tuple[str, ...] = (
@@ -28,6 +36,22 @@ ALLOWED_IDLE_ACTIONS: tuple[str, ...] = (
     "nod_lethargy",
     "doze_off",
 )
+DEFAULT_IDLE_LED_STYLES: tuple[str, ...] = (
+    "breath",
+    "boom",
+    "listen",
+    "monochromatic",
+)
+DEFAULT_IDLE_LED_COLORS: tuple[str, ...] = (
+    "white",
+    "red",
+    "yellow",
+    "green",
+    "blue",
+    "cyan",
+    "magenta",
+    "pink",
+)
 
 
 def utc_now() -> str:
@@ -36,6 +60,10 @@ def utc_now() -> str:
 
 class ControllerError(RuntimeError):
     """Raised when the robot backend cannot satisfy a request."""
+
+
+def resolve_action_name(name: str) -> str:
+    return ACTION_ALIASES.get(name, name)
 
 
 def _python_version_dirs() -> tuple[str, str]:
@@ -144,11 +172,14 @@ class MockRobotController(BaseRobotController):
         self.stop_count = 0
 
     def run_action(self, name: str, speed: int = 80, step_count: int = 1) -> Dict[str, Any]:
-        if name not in BASE_ACTIONS and name not in COMPOSITE_ACTIONS:
+        action_name = resolve_action_name(name)
+        if action_name not in BASE_ACTIONS and name not in COMPOSITE_ACTIONS:
             raise ControllerError("Unknown action.")
 
         sleep(min(0.05 * step_count, 0.3))
         self.last_action = {"name": name, "speed": speed, "step_count": step_count}
+        if action_name != name:
+            self.last_action["backend_action"] = action_name
         return {"ok": True, "action": self.last_action, "mode": self.mode}
 
     def play_sound(self, name: str, volume: int = 100, wait: bool = False) -> Dict[str, Any]:
@@ -253,15 +284,18 @@ class RealRobotController(BaseRobotController):
         return name
 
     def run_action(self, name: str, speed: int = 80, step_count: int = 1) -> Dict[str, Any]:
+        action_name = resolve_action_name(name)
         if name in self._composite_actions:
             self._composite_actions[name](speed, step_count)
-        elif name in BASE_ACTIONS:
-            self._dog.do_action(name, step_count=step_count, speed=speed)
+        elif action_name in BASE_ACTIONS:
+            self._dog.do_action(action_name, step_count=step_count, speed=speed)
             self._dog.wait_all_done()
         else:
             raise ControllerError("Unknown action.")
 
         self._last_action = {"name": name, "speed": speed, "step_count": step_count}
+        if action_name != name:
+            self._last_action["backend_action"] = action_name
         return {"ok": True, "action": self._last_action, "mode": self.mode}
 
     def play_sound(self, name: str, volume: int = 100, wait: bool = False) -> Dict[str, Any]:
@@ -384,6 +418,11 @@ class PidogCommandService:
         idle_min_interval_seconds: float = 8.0,
         idle_max_interval_seconds: float = 18.0,
         idle_speed: int = 60,
+        idle_led_enabled: bool = True,
+        idle_led_styles: Optional[Sequence[str]] = None,
+        idle_led_colors: Optional[Sequence[str]] = None,
+        idle_led_brightness: float = 0.35,
+        idle_led_bps: float = 1.0,
     ):
         self.controller = controller
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pidog-api")
@@ -394,12 +433,18 @@ class PidogCommandService:
         self._idle_min_interval_seconds = max(0.1, idle_min_interval_seconds)
         self._idle_max_interval_seconds = max(self._idle_min_interval_seconds, idle_max_interval_seconds)
         self._idle_speed = max(1, min(100, idle_speed))
+        self._idle_led_styles = self._validate_idle_led_styles(idle_led_styles or DEFAULT_IDLE_LED_STYLES)
+        self._idle_led_colors = self._validate_idle_led_colors(idle_led_colors or DEFAULT_IDLE_LED_COLORS)
+        self._idle_led_enabled = idle_led_enabled and self._idle_enabled and bool(self._idle_led_styles) and bool(self._idle_led_colors)
+        self._idle_led_brightness = max(0.0, min(1.0, idle_led_brightness))
+        self._idle_led_bps = max(0.1, min(10.0, idle_led_bps))
         self._idle_stop = threading.Event()
         self._idle_future: Optional[Future] = None
         self._idle_running = False
         self._idle_run_count = 0
         self._idle_error_count = 0
         self._idle_last_action: Optional[str] = None
+        self._idle_last_led: Optional[Dict[str, Any]] = None
         self._idle_last_started_at: Optional[str] = None
         self._idle_last_completed_at: Optional[str] = None
         self._idle_last_error: Optional[str] = None
@@ -422,6 +467,30 @@ class PidogCommandService:
                 valid_actions.append(action)
         return tuple(valid_actions)
 
+    @staticmethod
+    def _validate_idle_led_styles(styles: Sequence[str]) -> tuple[str, ...]:
+        valid_styles = []
+        for style in styles:
+            if style in LED_STYLES and style != "off" and style not in valid_styles:
+                valid_styles.append(style)
+        return tuple(valid_styles)
+
+    @staticmethod
+    def _validate_idle_led_colors(colors: Sequence[str]) -> tuple[str, ...]:
+        valid_colors = []
+        for color in colors:
+            if color in LED_COLORS and color != "black" and color not in valid_colors:
+                valid_colors.append(color)
+        return tuple(valid_colors)
+
+    def _choose_idle_led(self) -> Dict[str, Any]:
+        return {
+            "style": random.choice(self._idle_led_styles),
+            "color": random.choice(self._idle_led_colors),
+            "bps": self._idle_led_bps,
+            "brightness": self._idle_led_brightness,
+        }
+
     def _has_user_work_locked(self) -> bool:
         return any(job.status in {"submitted", "running"} for job in self._jobs.values())
 
@@ -436,6 +505,7 @@ class PidogCommandService:
 
     def _run_idle_action(self, action: str) -> Dict[str, Any]:
         started_at = utc_now()
+        led: Optional[Dict[str, Any]] = None
         with self._lock:
             self._idle_running = True
             self._idle_last_action = action
@@ -443,8 +513,21 @@ class PidogCommandService:
             self._idle_last_error = None
 
         try:
+            if self._idle_led_enabled:
+                led = self._choose_idle_led()
+                self.controller.set_led(**led)
+                with self._lock:
+                    self._idle_last_led = led
+
             result = self.controller.run_action(action, speed=self._idle_speed, step_count=1)
+            if self._idle_led_enabled:
+                self.controller.set_led(style="off", color="black", bps=1.0, brightness=0.0)
         except Exception as exc:
+            if self._idle_led_enabled:
+                try:
+                    self.controller.set_led(style="off", color="black", bps=1.0, brightness=0.0)
+                except Exception:
+                    pass
             completed_at = utc_now()
             with self._lock:
                 self._idle_running = False
@@ -477,8 +560,9 @@ class PidogCommandService:
             try:
                 while not future.done():
                     if self._idle_stop.wait(0.1):
-                        future.cancel()
-                        return
+                        if future.cancel():
+                            return
+                        continue
                     if self._has_user_work() and future.cancel():
                         break
                 if not future.cancelled():
@@ -573,6 +657,7 @@ class PidogCommandService:
                 "run_count": self._idle_run_count,
                 "error_count": self._idle_error_count,
                 "last_action": self._idle_last_action,
+                "last_led": self._idle_last_led,
                 "last_started_at": self._idle_last_started_at,
                 "last_completed_at": self._idle_last_completed_at,
                 "last_error": self._idle_last_error,
@@ -581,6 +666,14 @@ class PidogCommandService:
                     "max": self._idle_max_interval_seconds,
                 },
                 "speed": self._idle_speed,
+                "led": {
+                    "enabled": self._idle_led_enabled,
+                    "styles": list(self._idle_led_styles),
+                    "colors": list(self._idle_led_colors),
+                    "brightness": self._idle_led_brightness,
+                    "bps": self._idle_led_bps,
+                    "turns_off_after_idle": True,
+                },
             }
 
         return {
